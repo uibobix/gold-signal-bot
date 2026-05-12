@@ -73,10 +73,11 @@ function rsi(values: number[], period = 14): number {
   return 100 - 100 / (1 + rs);
 }
 
+type HistoryItem = { id: string; type: "BUY" | "SELL"; entry: number; exit: number; pips: number; win: boolean; time: string };
+
 function buildHistory(candles: Candle[]) {
-  // Synthesize past trades from recent candle pivots
   const closes = candles.map(c => c.close);
-  const out: SignalResult extends { history: infer H } ? H : never = [] as any;
+  const out: HistoryItem[] = [];
   let wins = 0, total = 0;
   for (let i = 10; i < closes.length - 5 && out.length < 8; i += 7) {
     const entry = closes[i];
