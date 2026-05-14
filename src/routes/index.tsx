@@ -119,6 +119,11 @@ function Dashboard() {
             </div>
             <div className="mb-5">
               <h2 className={`text-4xl font-mono font-bold mb-1 ${sigColor}`}>{signal.type}</h2>
+              {signal.playbook !== "NONE" && (
+                <span className="inline-block text-[9px] font-mono uppercase tracking-widest border border-accent/40 bg-accent/10 text-accent px-1.5 py-0.5 mb-2">
+                  {signal.playbook === "TREND_PULLBACK" ? "Playbook A · Trend Pullback" : "Playbook B · Mean Reversion"}
+                </span>
+              )}
               <p className="text-sm text-muted-foreground">
                 Confidence: <span className="text-foreground font-mono">{signal.confidence}%</span>
                 {!isNeutral && <> · R:R <span className="text-accent font-mono">1:{signal.riskReward}</span></>}
