@@ -248,8 +248,7 @@ function Dashboard() {
               </table>
             </div>
             <p className="text-[10px] text-muted-foreground mt-3 leading-relaxed max-w-2xl">
-              Strategy: multi-timeframe trend alignment (H1+H4+D1) + London/NY session + non-choppy market + DXY inverse confirmation + 1:2.2 R:R.
-              Realistic edge is win rate × avg R. Win rates above 70% with positive R are extremely rare — be skeptical of anyone claiming higher.
+              <strong className="text-foreground">Strategy v3.0 — Adaptive Hybrid:</strong> ADX gates the regime. Trending markets (ADX≥22) trade Playbook A: H4+D1 aligned + price pullback into EMA20/50 + RSI rotation, 1.5×ATR stop, 1:2 RR. Ranging markets (ADX&lt;20) trade Playbook B: BB(20,2) outer-band tag + RSI extreme reversion to mid. Kill-zone sessions only (London / Overlap / NY). DXY inverse confirms. Backtest split 70/30 in-sample / out-of-sample for walk-forward sanity. Sharpe and Sortino reported per-trade R basis.
             </p>
           </div>
         </div>
