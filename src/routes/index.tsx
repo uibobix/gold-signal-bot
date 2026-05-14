@@ -153,9 +153,9 @@ function Dashboard() {
               <span className="text-[10px] font-mono text-muted-foreground">{confluence.passed}/{confluence.total}</span>
             </div>
             <div className="space-y-2.5">
-              <Check label="HTF bias aligned" detail={`H4 ${confluence.h4Trend} · D1 ${confluence.d1Trend}`} pass={confluence.h4Trend === confluence.d1Trend && confluence.h4Trend !== "FLAT"} />
+              <Check label={signal.playbook === "MEAN_REVERSION" ? "Range regime active" : "HTF bias aligned"} detail={signal.playbook === "MEAN_REVERSION" ? `ADX ${confluence.adx}` : `H4 ${confluence.h4Trend} · D1 ${confluence.d1Trend}`} pass={signal.playbook === "MEAN_REVERSION" ? confluence.regime === "RANGE" : confluence.h4Trend === confluence.d1Trend && confluence.h4Trend !== "FLAT"} />
               <Check label="Kill zone session" detail={confluence.session} pass={confluence.sessionOk} />
-              <Check label="Trending regime" detail={confluence.chop ? "EMA ribbon tight" : "Expanding"} pass={!confluence.chop} />
+              <Check label="Regime detected" detail={`${confluence.regime} · ADX ${confluence.adx}`} pass={confluence.regime !== "CHOP"} />
               <Check label="DXY inverse" detail={`DXY ${confluence.dxyTrend}`} pass={confluence.dxyOk} />
             </div>
           </div>
