@@ -119,6 +119,11 @@ function Dashboard() {
             </div>
             <div className="mb-5">
               <h2 className={`text-4xl font-mono font-bold mb-1 ${sigColor}`}>{signal.type}</h2>
+              {signal.playbook !== "NONE" && (
+                <span className="inline-block text-[9px] font-mono uppercase tracking-widest border border-accent/40 bg-accent/10 text-accent px-1.5 py-0.5 mb-2">
+                  {signal.playbook === "TREND_PULLBACK" ? "Playbook A · Trend Pullback" : "Playbook B · Mean Reversion"}
+                </span>
+              )}
               <p className="text-sm text-muted-foreground">
                 Confidence: <span className="text-foreground font-mono">{signal.confidence}%</span>
                 {!isNeutral && <> · R:R <span className="text-accent font-mono">1:{signal.riskReward}</span></>}
@@ -153,9 +158,9 @@ function Dashboard() {
               <span className="text-[10px] font-mono text-muted-foreground">{confluence.passed}/{confluence.total}</span>
             </div>
             <div className="space-y-2.5">
-              <Check label="HTF bias aligned" detail={`H4 ${confluence.h4Trend} · D1 ${confluence.d1Trend}`} pass={confluence.h4Trend === confluence.d1Trend && confluence.h4Trend !== "FLAT"} />
+              <Check label={signal.playbook === "MEAN_REVERSION" ? "Range regime active" : "HTF bias aligned"} detail={signal.playbook === "MEAN_REVERSION" ? `ADX ${confluence.adx}` : `H4 ${confluence.h4Trend} · D1 ${confluence.d1Trend}`} pass={signal.playbook === "MEAN_REVERSION" ? confluence.regime === "RANGE" : confluence.h4Trend === confluence.d1Trend && confluence.h4Trend !== "FLAT"} />
               <Check label="Kill zone session" detail={confluence.session} pass={confluence.sessionOk} />
-              <Check label="Trending regime" detail={confluence.chop ? "EMA ribbon tight" : "Expanding"} pass={!confluence.chop} />
+              <Check label="Regime detected" detail={`${confluence.regime} · ADX ${confluence.adx}`} pass={confluence.regime !== "CHOP"} />
               <Check label="DXY inverse" detail={`DXY ${confluence.dxyTrend}`} pass={confluence.dxyOk} />
             </div>
           </div>
@@ -166,9 +171,11 @@ function Dashboard() {
             <h3 className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-4">Technical Readout</h3>
             <div className="space-y-3">
               <Row label="RSI (14)" value={`${indicators.rsi} (${indicators.rsiLabel})`} tone={indicators.rsi > 70 ? "danger" : indicators.rsi < 30 ? "success" : "muted"} />
+              <Row label="ADX (14)" value={`${indicators.adx} ${indicators.adx >= 25 ? "trending" : indicators.adx < 20 ? "ranging" : "weak"}`} tone={indicators.adx >= 25 ? "success" : "muted"} />
               <Row label="MACD" value={`${indicators.macd > 0 ? "+" : ""}${indicators.macd} ${indicators.macdLabel}`} tone={indicators.macd > 0 ? "success" : "danger"} />
-              <Row label="EMA 50" value={fmt(indicators.ema50)} tone="muted" />
+              <Row label="EMA 20 / 50" value={`${fmt(indicators.ema20)} / ${fmt(indicators.ema50)}`} tone="muted" />
               <Row label="EMA 200" value={fmt(indicators.ema200)} tone="muted" />
+              <Row label="BB(20,2)" value={`${fmt(indicators.bbLower)} – ${fmt(indicators.bbUpper)}`} tone="muted" />
               <Row label="ATR (14)" value={fmt(indicators.atr)} tone="muted" />
             </div>
           </div>
@@ -191,13 +198,17 @@ function Dashboard() {
           </div>
 
           {/* Backtest Stats */}
-          <div className="grid grid-cols-2 md:grid-cols-6 gap-3 animate-reveal" style={{ animationDelay: "175ms" }}>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 animate-reveal" style={{ animationDelay: "175ms" }}>
             <Stat label="Backtest Trades" value={`${backtest.trades}`} />
             <Stat label="Win Rate" value={`${backtest.winRate}%`} tone={backtest.winRate >= 50 ? "success" : "danger"} />
-            <Stat label="Avg R per trade" value={`${backtest.avgRR > 0 ? "+" : ""}${backtest.avgRR}R`} tone={backtest.avgRR > 0 ? "success" : "danger"} />
+            <Stat label="Expectancy" value={`${backtest.expectancy > 0 ? "+" : ""}${backtest.expectancy}R`} tone={backtest.expectancy > 0 ? "success" : "danger"} />
             <Stat label="Profit Factor" value={`${backtest.profitFactor}`} tone={backtest.profitFactor >= 1.5 ? "success" : backtest.profitFactor >= 1 ? "muted" : "danger"} />
+            <Stat label="Sharpe" value={`${backtest.sharpe}`} tone={backtest.sharpe >= 1 ? "success" : backtest.sharpe >= 0 ? "muted" : "danger"} />
+            <Stat label="Sortino" value={`${backtest.sortino}`} tone={backtest.sortino >= 1 ? "success" : backtest.sortino >= 0 ? "muted" : "danger"} />
             <Stat label="Net (R)" value={`${backtest.netR > 0 ? "+" : ""}${backtest.netR}R`} tone={backtest.netR > 0 ? "success" : "danger"} />
             <Stat label="Max DD (R)" value={`-${backtest.maxDrawdownR}R`} tone="danger" />
+            <Stat label="In-Sample (70%)" value={`${backtest.inSampleNetR > 0 ? "+" : ""}${backtest.inSampleNetR}R`} tone={backtest.inSampleNetR > 0 ? "success" : "danger"} />
+            <Stat label="Out-of-Sample (30%)" value={`${backtest.outSampleNetR > 0 ? "+" : ""}${backtest.outSampleNetR}R`} tone={backtest.outSampleNetR > 0 ? "success" : "danger"} />
           </div>
 
           <div className="animate-reveal" style={{ animationDelay: "200ms" }}>
@@ -237,8 +248,7 @@ function Dashboard() {
               </table>
             </div>
             <p className="text-[10px] text-muted-foreground mt-3 leading-relaxed max-w-2xl">
-              Strategy: multi-timeframe trend alignment (H1+H4+D1) + London/NY session + non-choppy market + DXY inverse confirmation + 1:2.2 R:R.
-              Realistic edge is win rate × avg R. Win rates above 70% with positive R are extremely rare — be skeptical of anyone claiming higher.
+              <strong className="text-foreground">Strategy v3.0 — Adaptive Hybrid:</strong> ADX gates the regime. Trending markets (ADX≥22) trade Playbook A: H4+D1 aligned + price pullback into EMA20/50 + RSI rotation, 1.5×ATR stop, 1:2 RR. Ranging markets (ADX&lt;20) trade Playbook B: BB(20,2) outer-band tag + RSI extreme reversion to mid. Kill-zone sessions only (London / Overlap / NY). DXY inverse confirms. Backtest split 70/30 in-sample / out-of-sample for walk-forward sanity. Sharpe and Sortino reported per-trade R basis.
             </p>
           </div>
         </div>
