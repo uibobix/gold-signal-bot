@@ -166,9 +166,11 @@ function Dashboard() {
             <h3 className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-4">Technical Readout</h3>
             <div className="space-y-3">
               <Row label="RSI (14)" value={`${indicators.rsi} (${indicators.rsiLabel})`} tone={indicators.rsi > 70 ? "danger" : indicators.rsi < 30 ? "success" : "muted"} />
+              <Row label="ADX (14)" value={`${indicators.adx} ${indicators.adx >= 25 ? "trending" : indicators.adx < 20 ? "ranging" : "weak"}`} tone={indicators.adx >= 25 ? "success" : "muted"} />
               <Row label="MACD" value={`${indicators.macd > 0 ? "+" : ""}${indicators.macd} ${indicators.macdLabel}`} tone={indicators.macd > 0 ? "success" : "danger"} />
-              <Row label="EMA 50" value={fmt(indicators.ema50)} tone="muted" />
+              <Row label="EMA 20 / 50" value={`${fmt(indicators.ema20)} / ${fmt(indicators.ema50)}`} tone="muted" />
               <Row label="EMA 200" value={fmt(indicators.ema200)} tone="muted" />
+              <Row label="BB(20,2)" value={`${fmt(indicators.bbLower)} – ${fmt(indicators.bbUpper)}`} tone="muted" />
               <Row label="ATR (14)" value={fmt(indicators.atr)} tone="muted" />
             </div>
           </div>
