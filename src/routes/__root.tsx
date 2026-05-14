@@ -72,14 +72,22 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Lovable App" },
-      { name: "description", content: "Lovable Generated Project" },
-      { name: "author", content: "Lovable" },
-      { property: "og:title", content: "Lovable App" },
-      { property: "og:description", content: "Lovable Generated Project" },
+      { title: "Aureum Terminal" },
+      {
+        name: "description",
+        content:
+          "Hourly XAU/USD trade signals with server-side analysis and live dashboard reporting.",
+      },
+      { name: "author", content: "uibobix" },
+      { property: "og:title", content: "Aureum Terminal" },
+      {
+        property: "og:description",
+        content:
+          "Hourly XAU/USD trade signals with server-side analysis and live dashboard reporting.",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
-      { name: "twitter:site", content: "@Lovable" },
+      { name: "twitter:title", content: "Aureum Terminal" },
     ],
     links: [
       {
