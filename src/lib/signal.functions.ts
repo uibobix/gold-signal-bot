@@ -12,17 +12,11 @@ const EMA_SLOW_PERIOD = 200;
 const CHART_CANDLES = 60;
 const BACKTEST_MAX_HOLD_BARS = 60;
 const HISTORY_OUTPUT_SIZE = 5000;
-const MIN_SIGNAL_CANDLES = 220;
-type TimeSeriesValue = {
-  datetime: string;
-  open: string;
-  high: string;
-  low: string;
-  close: string;
-};
-type TimeSeriesResponse = {
-  values?: TimeSeriesValue[];
-};
+const BACKTEST_LOOKBACK = 2000; // last ~83 days of H1 — enough samples, fast on Workers
+const MIN_SIGNAL_CANDLES = 260;
+
+type TimeSeriesValue = { datetime: string; open: string; high: string; low: string; close: string };
+type TimeSeriesResponse = { values?: TimeSeriesValue[] };
 
 type HistoryItem = {
   id: string;
@@ -102,13 +96,15 @@ export type SignalResult =
     }
   | { ok: false; error: string };
 
-// =============== math primitives ===============
-function ema(values: number[], period: number): number[] {
+// =============== indicator series (all O(n), computed once) ===============
+function emaSeries(values: number[], period: number): number[] {
   const k = 2 / (period + 1);
-  const out: number[] = [values[0]];
-  for (let i = 1; i < values.length; i++) out.push(values[i] * k + out[i - 1] * (1 - k));
+  const out: number[] = new Array(values.length);
+  out[0] = values[0];
+  for (let i = 1; i < values.length; i++) out[i] = values[i] * k + out[i - 1] * (1 - k);
   return out;
 }
+
 function rsiSeries(values: number[], period = 14): number[] {
   const out: number[] = new Array(values.length).fill(50);
   if (values.length < period + 1) return out;
@@ -132,41 +128,48 @@ function rsiSeries(values: number[], period = 14): number[] {
   }
   return out;
 }
+
 function atrSeries(candles: Candle[], period = 14): number[] {
-  const out: number[] = new Array(candles.length).fill(0);
-  const trs: number[] = [0];
-  for (let i = 1; i < candles.length; i++) {
-    const c = candles[i],
-      p = candles[i - 1];
-    trs.push(Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close)));
-  }
-  let sum = 0;
-  for (let i = 1; i < candles.length; i++) {
-    sum += trs[i];
-    if (i < period) continue;
-    if (i === period) out[i] = sum / period;
-    else out[i] = (out[i - 1] * (period - 1) + trs[i]) / period;
-  }
-  return out;
-}
-// Wilder ADX — trend strength (>25 = trending, <20 = ranging)
-function adxSeries(candles: Candle[], period = 14): number[] {
   const n = candles.length;
-  const out = new Array(n).fill(0);
-  if (n < period * 2) return out;
-  const tr: number[] = [0],
-    pdm: number[] = [0],
-    ndm: number[] = [0];
+  const out: number[] = new Array(n).fill(0);
+  if (n < 2) return out;
+  const trs: number[] = new Array(n);
+  trs[0] = 0;
   for (let i = 1; i < n; i++) {
     const c = candles[i],
       p = candles[i - 1];
-    tr.push(Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close)));
-    const up = c.high - p.high,
-      dn = p.low - c.low;
-    pdm.push(up > dn && up > 0 ? up : 0);
-    ndm.push(dn > up && dn > 0 ? dn : 0);
+    trs[i] = Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close));
   }
-  // Wilder smoothing
+  let sum = 0;
+  for (let i = 1; i < n; i++) {
+    if (i <= period) {
+      sum += trs[i];
+      if (i === period) out[i] = sum / period;
+    } else {
+      out[i] = (out[i - 1] * (period - 1) + trs[i]) / period;
+    }
+  }
+  return out;
+}
+
+// Wilder ADX series — O(n)
+function adxSeries(candles: Candle[], period = 14): number[] {
+  const n = candles.length;
+  const out = new Array(n).fill(0);
+  if (n < period * 2 + 2) return out;
+  const tr: number[] = new Array(n);
+  const pdm: number[] = new Array(n);
+  const ndm: number[] = new Array(n);
+  tr[0] = pdm[0] = ndm[0] = 0;
+  for (let i = 1; i < n; i++) {
+    const c = candles[i],
+      p = candles[i - 1];
+    tr[i] = Math.max(c.high - c.low, Math.abs(c.high - p.close), Math.abs(c.low - p.close));
+    const up = c.high - p.high;
+    const dn = p.low - c.low;
+    pdm[i] = up > dn && up > 0 ? up : 0;
+    ndm[i] = dn > up && dn > 0 ? dn : 0;
+  }
   let trS = 0,
     pS = 0,
     nS = 0;
@@ -175,22 +178,28 @@ function adxSeries(candles: Candle[], period = 14): number[] {
     pS += pdm[i];
     nS += ndm[i];
   }
-  const dxArr: number[] = [];
+  let dxSum = 0;
+  let dxCount = 0;
   for (let i = period + 1; i < n; i++) {
     trS = trS - trS / period + tr[i];
     pS = pS - pS / period + pdm[i];
     nS = nS - nS / period + ndm[i];
-    const pdi = (pS / trS) * 100;
-    const ndi = (nS / trS) * 100;
-    const dx = (Math.abs(pdi - ndi) / (pdi + ndi || 1)) * 100;
-    dxArr.push(dx);
-    if (dxArr.length >= period) {
-      const slice = dxArr.slice(-period);
-      out[i] = slice.reduce((a, b) => a + b, 0) / period;
+    const pdi = trS > 0 ? (pS / trS) * 100 : 0;
+    const ndi = trS > 0 ? (nS / trS) * 100 : 0;
+    const sum = pdi + ndi;
+    const dx = sum > 0 ? (Math.abs(pdi - ndi) / sum) * 100 : 0;
+    if (dxCount < period) {
+      dxSum += dx;
+      dxCount++;
+      if (dxCount === period) out[i] = dxSum / period;
+    } else {
+      out[i] = (out[i - 1] * (period - 1) + dx) / period;
     }
   }
   return out;
 }
+
+// Resample to higher TF — used to compute HTF EMAs which we then map back per H1 index
 function resampleHigher(candles: Candle[], factor: number): Candle[] {
   const out: Candle[] = [];
   for (let i = 0; i + factor <= candles.length; i += factor) {
@@ -205,15 +214,29 @@ function resampleHigher(candles: Candle[], factor: number): Candle[] {
   }
   return out;
 }
-function htfTrend(closes: number[]): Trend {
-  if (closes.length < EMA_SLOW_PERIOD) return "FLAT";
-  const e50 = ema(closes, EMA_FAST_PERIOD).at(-1)!;
-  const e200 = ema(closes, EMA_SLOW_PERIOD).at(-1)!;
-  const diff = (e50 - e200) / e200;
-  if (diff > 0.001) return "UP";
-  if (diff < -0.001) return "DOWN";
-  return "FLAT";
+
+// For each H1 index, return trend (UP/DOWN/FLAT) at the most recent CLOSED HTF bar
+function buildHtfTrendByIndex(candles: Candle[], factor: number): Trend[] {
+  const htf = resampleHigher(candles, factor);
+  const closes = htf.map((c) => c.close);
+  const e50 = emaSeries(closes, EMA_FAST_PERIOD);
+  const e200 = emaSeries(closes, EMA_SLOW_PERIOD);
+  const trendAtHtf: Trend[] = htf.map((_, j) => {
+    if (j < EMA_SLOW_PERIOD) return "FLAT";
+    const diff = (e50[j] - e200[j]) / e200[j];
+    if (diff > 0.001) return "UP";
+    if (diff < -0.001) return "DOWN";
+    return "FLAT";
+  });
+  // map every H1 index to trend at most-recently-CLOSED HTF bucket (j-1)
+  const out: Trend[] = new Array(candles.length).fill("FLAT");
+  for (let i = 0; i < candles.length; i++) {
+    const j = Math.floor(i / factor) - 1;
+    if (j >= 0) out[i] = trendAtHtf[j];
+  }
+  return out;
 }
+
 function getSession(d: Date): "ASIA" | "LONDON" | "NY" | "OVERLAP" | "CLOSED" {
   const h = d.getUTCHours(),
     day = d.getUTCDay();
@@ -225,85 +248,101 @@ function getSession(d: Date): "ASIA" | "LONDON" | "NY" | "OVERLAP" | "CLOSED" {
 }
 
 function buildDxySnapshots(dxyCandles: Candle[] | null): {
-  trendByTargetIndex: Trend[];
+  trendByIndex: Trend[];
   latest: DxySnapshot;
 } {
-  if (!dxyCandles || dxyCandles.length === 0) {
-    return { trendByTargetIndex: [], latest: null };
-  }
-
+  if (!dxyCandles || dxyCandles.length === 0) return { trendByIndex: [], latest: null };
   const closes = dxyCandles.map((c) => c.close);
-  const ema20 = ema(closes, 20);
-  const trendByTargetIndex = dxyCandles.map((candle, index) => {
-    const currentEma = ema20[index] ?? candle.close;
-    if (candle.close > currentEma * 1.0005) return "UP";
-    if (candle.close < currentEma * 0.9995) return "DOWN";
-    return "FLAT";
+  const e20 = emaSeries(closes, 20);
+  const trendByIndex = dxyCandles.map((c, i) => {
+    const m = e20[i] ?? c.close;
+    if (c.close > m * 1.0005) return "UP" as Trend;
+    if (c.close < m * 0.9995) return "DOWN" as Trend;
+    return "FLAT" as Trend;
   });
-
-  const latestClose = closes.at(-1)!;
-  const priorClose = closes.at(-24) ?? latestClose;
-
+  const last = closes.at(-1)!;
+  const prior = closes.at(-24) ?? last;
   return {
-    trendByTargetIndex,
+    trendByIndex,
     latest: {
-      price: +latestClose.toFixed(2),
-      changePct: +(((latestClose - priorClose) / priorClose) * 100).toFixed(2),
-      trend: trendByTargetIndex.at(-1) ?? "FLAT",
+      price: +last.toFixed(2),
+      changePct: +(((last - prior) / prior) * 100).toFixed(2),
+      trend: trendByIndex.at(-1) ?? "FLAT",
     },
   };
 }
 
 function alignDxyTrends(targetCandles: Candle[], dxyCandles: Candle[] | null): Trend[] {
-  if (!dxyCandles || dxyCandles.length === 0) {
-    return new Array(targetCandles.length).fill("FLAT");
-  }
-
-  const { trendByTargetIndex } = buildDxySnapshots(dxyCandles);
+  if (!dxyCandles || dxyCandles.length === 0)
+    return new Array(targetCandles.length).fill("FLAT") as Trend[];
+  const { trendByIndex } = buildDxySnapshots(dxyCandles);
   const aligned: Trend[] = [];
-  let dxyIndex = 0;
-  let currentTrend: Trend = "FLAT";
-
-  for (const candle of targetCandles) {
-    while (dxyIndex < dxyCandles.length && dxyCandles[dxyIndex].datetime <= candle.datetime) {
-      currentTrend = trendByTargetIndex[dxyIndex] ?? currentTrend;
-      dxyIndex += 1;
+  let dxyIdx = 0;
+  let cur: Trend = "FLAT";
+  for (const c of targetCandles) {
+    while (dxyIdx < dxyCandles.length && dxyCandles[dxyIdx].datetime <= c.datetime) {
+      cur = trendByIndex[dxyIdx] ?? cur;
+      dxyIdx++;
     }
-    aligned.push(currentTrend);
+    aligned.push(cur);
   }
-
   return aligned;
 }
 
-// =============== single-sleeve trend evaluator ===============
-// TREND_PULLBACK:
-//   ADX>=22 + H4/D1 aligned + H1 structure stacked + price pulled back into EMA20/50 zone
-//   + RSI rotating with the trend + confirming candle. DXY is a confidence input, not a veto.
-function evaluateAt(candles: Candle[], i: number, dxyTrend: Trend) {
-  if (i < EMA_SLOW_PERIOD) return null;
-  const window = candles.slice(0, i + 1);
-  const closes = window.map((c) => c.close);
-  const ema20v = ema(closes, 20).at(-1)!;
-  const ema50v = ema(closes, 50).at(-1)!;
-  const ema200v = ema(closes, 200).at(-1)!;
-  const macd = ema(closes, 12).at(-1)! - ema(closes, 26).at(-1)!;
-  const rsiArr = rsiSeries(closes, 14);
-  const rsi = rsiArr.at(-1)!;
-  const rsiPrev = rsiArr.at(-2)!;
-  const atrArr = atrSeries(window, 14);
-  const atr = atrArr.at(-1)!;
-  const adxArr = adxSeries(window, 14);
-  const adx = adxArr.at(-1)!;
-  const price = closes[i];
-  const cur = candles[i];
+// =============== precomputed context ===============
+type Ctx = {
+  candles: Candle[];
+  closes: number[];
+  ema12: number[];
+  ema20: number[];
+  ema26: number[];
+  ema50: number[];
+  ema200: number[];
+  rsi: number[];
+  atr: number[];
+  adx: number[];
+  h4: Trend[];
+  d1: Trend[];
+  dxy: Trend[];
+};
 
-  // HTF bias (H4 + D1 from H1 base)
-  const h4 = resampleHigher(window, HOUR_FACTOR_H4);
-  const d1 = resampleHigher(window, HOUR_FACTOR_D1);
-  const h4Trend: Trend = htfTrend(h4.map((c) => c.close));
-  const d1Trend: Trend = htfTrend(d1.map((c) => c.close));
+function buildCtx(candles: Candle[], dxy: Trend[]): Ctx {
+  const closes = candles.map((c) => c.close);
+  return {
+    candles,
+    closes,
+    ema12: emaSeries(closes, 12),
+    ema20: emaSeries(closes, 20),
+    ema26: emaSeries(closes, 26),
+    ema50: emaSeries(closes, 50),
+    ema200: emaSeries(closes, 200),
+    rsi: rsiSeries(closes, 14),
+    atr: atrSeries(candles, 14),
+    adx: adxSeries(candles, 14),
+    h4: buildHtfTrendByIndex(candles, HOUR_FACTOR_H4),
+    d1: buildHtfTrendByIndex(candles, HOUR_FACTOR_D1),
+    dxy,
+  };
+}
+
+// =============== single-sleeve trend evaluator (O(1) per index) ===============
+function evaluateAt(ctx: Ctx, i: number) {
+  if (i < EMA_SLOW_PERIOD + 2) return null;
+  const cur = ctx.candles[i];
+  const price = ctx.closes[i];
+  const ema20v = ctx.ema20[i];
+  const ema50v = ctx.ema50[i];
+  const ema200v = ctx.ema200[i];
+  const macd = ctx.ema12[i] - ctx.ema26[i];
+  const rsi = ctx.rsi[i];
+  const rsiPrev = ctx.rsi[i - 1];
+  const atr = ctx.atr[i];
+  const adx = ctx.adx[i];
+  const h4Trend = ctx.h4[i];
+  const d1Trend = ctx.d1[i];
+  const dxyTrend = ctx.dxy[i] ?? "FLAT";
+
   const htfBias: Trend = h4Trend === d1Trend && h4Trend !== "FLAT" ? h4Trend : "FLAT";
-
   const h1StructureOk =
     htfBias === "UP"
       ? price > ema200v && ema20v > ema50v && ema50v > ema200v
@@ -311,9 +350,7 @@ function evaluateAt(candles: Candle[], i: number, dxyTrend: Trend) {
         ? price < ema200v && ema20v < ema50v && ema50v < ema200v
         : false;
 
-  let regime: Regime = "CHOP";
-  if (adx >= 22 && htfBias !== "FLAT") regime = "TREND";
-
+  const regime: Regime = adx >= 22 && htfBias !== "FLAT" ? "TREND" : "CHOP";
   const session = getSession(new Date(cur.datetime + "Z"));
   const sessionOk = session === "LONDON" || session === "NY" || session === "OVERLAP";
   const dxyOk =
@@ -321,7 +358,6 @@ function evaluateAt(candles: Candle[], i: number, dxyTrend: Trend) {
     (htfBias === "UP" && dxyTrend === "DOWN") ||
     (htfBias === "DOWN" && dxyTrend === "UP");
 
-  // Bullish/bearish close confirmation
   const bullCandle = cur.close > cur.open && cur.close > (cur.open + cur.high) / 2;
   const bearCandle = cur.close < cur.open && cur.close < (cur.open + cur.low) / 2;
 
@@ -370,16 +406,19 @@ function evaluateAt(candles: Candle[], i: number, dxyTrend: Trend) {
       takeProfit = +(entry - slDist * 2).toFixed(2);
       riskReward = 2;
     } else if (!h1StructureOk) {
-      skipReason =
-        "Higher-timeframe bias is present, but H1 structure is not stacked with the trend";
+      skipReason = "HTF bias present, but H1 EMAs not stacked with the trend";
+    } else if (!inPullback) {
+      skipReason = "Trend regime — price extended away from EMA20/50, waiting for pullback";
     } else {
-      skipReason = "Trend regime — waiting for clean pullback to EMA20/50 + momentum return";
+      skipReason = "Trend regime — pullback active, waiting for momentum confirmation";
     }
   } else {
-    if (regime === "CHOP")
-      skipReason = `Trend strength is not established yet (ADX ${adx.toFixed(0)})`;
+    if (regime === "CHOP" && htfBias === "FLAT")
+      skipReason = `No trend (ADX ${adx.toFixed(0)}) and H4/D1 not aligned (${h4Trend}/${d1Trend})`;
+    else if (regime === "CHOP")
+      skipReason = `Trend strength too weak (ADX ${adx.toFixed(0)}, need ≥22)`;
     else if (!sessionOk) skipReason = `Outside kill zones (${session})`;
-    else if (htfBias === "FLAT") skipReason = `H4 (${h4Trend}) and D1 (${d1Trend}) not aligned`;
+    else skipReason = `H4 (${h4Trend}) and D1 (${d1Trend}) not aligned`;
   }
 
   let confidence = 50;
@@ -407,6 +446,7 @@ function evaluateAt(candles: Candle[], i: number, dxyTrend: Trend) {
     h1StructureOk,
     session,
     sessionOk,
+    dxyTrend,
     dxyOk,
     rsi,
     macd,
@@ -421,8 +461,9 @@ function evaluateAt(candles: Candle[], i: number, dxyTrend: Trend) {
   };
 }
 
-// =============== backtest ===============
-function backtest(candles: Candle[], alignedDxyTrends: Trend[]) {
+// =============== fast backtest ===============
+function backtest(ctx: Ctx) {
+  const { candles } = ctx;
   const trades: HistoryItem[] = [];
   const rs: number[] = [];
   let wins = 0,
@@ -432,19 +473,22 @@ function backtest(candles: Candle[], alignedDxyTrends: Trend[]) {
   let equity = 0,
     peak = 0,
     maxDD = 0;
-  const splitIdx = Math.floor(candles.length * 0.7);
+  // Walk-forward 70/30 split applied on the backtest window
+  const start = Math.max(EMA_SLOW_PERIOD + 2, candles.length - BACKTEST_LOOKBACK);
+  const splitIdx = start + Math.floor((candles.length - start) * 0.7);
   let inSampleR = 0,
     outSampleR = 0;
-  let i = EMA_SLOW_PERIOD;
+  let i = start;
   while (i < candles.length - 1) {
-    const ev = evaluateAt(candles, i, alignedDxyTrends[i] ?? "FLAT");
+    const ev = evaluateAt(ctx, i);
     if (!ev || ev.type === "NEUTRAL") {
       i++;
       continue;
     }
     let exitIdx = -1,
       win = false;
-    for (let j = i + 1; j < Math.min(i + BACKTEST_MAX_HOLD_BARS, candles.length); j++) {
+    const limit = Math.min(i + BACKTEST_MAX_HOLD_BARS, candles.length);
+    for (let j = i + 1; j < limit; j++) {
       const c = candles[j];
       if (ev.type === "BUY") {
         if (c.low <= ev.stopLoss) {
@@ -482,9 +526,7 @@ function backtest(candles: Candle[], alignedDxyTrends: Trend[]) {
     if (win) {
       wins++;
       grossWin += r;
-    } else {
-      grossLoss += 1;
-    }
+    } else grossLoss += 1;
     equity += r;
     if (equity > peak) peak = equity;
     if (peak - equity > maxDD) maxDD = peak - equity;
@@ -505,7 +547,6 @@ function backtest(candles: Candle[], alignedDxyTrends: Trend[]) {
   const total = trades.length;
   const winRate = total ? wins / total : 0;
   const expectancy = total ? totalR / total : 0;
-  // Sharpe / Sortino on per-trade R
   const meanR = expectancy;
   const sd =
     rs.length > 1 ? Math.sqrt(rs.reduce((a, b) => a + (b - meanR) ** 2, 0) / rs.length) : 0;
@@ -577,12 +618,12 @@ export const getSignal = createServerFn({ method: "GET" }).handler(
       const high = Math.max(...last24.map((c) => c.high));
       const low = Math.min(...last24.map((c) => c.low));
 
-      const alignedDxyTrends = alignDxyTrends(candles, dxyCandles);
+      const alignedDxy = alignDxyTrends(candles, dxyCandles);
       const dxySnapshot = buildDxySnapshots(dxyCandles).latest;
-      const dxyTrend = alignedDxyTrends.at(-1) ?? "FLAT";
 
-      const ev = evaluateAt(candles, candles.length - 1, dxyTrend)!;
-      const bt = backtest(candles, alignedDxyTrends);
+      const ctx = buildCtx(candles, alignedDxy);
+      const ev = evaluateAt(ctx, candles.length - 1)!;
+      const bt = backtest(ctx);
 
       const checks = [
         ev.regime === "TREND",
@@ -599,7 +640,7 @@ export const getSignal = createServerFn({ method: "GET" }).handler(
       const rationale =
         ev.type === "NEUTRAL"
           ? `Stand aside — ${ev.skipReason}. Quality > frequency.`
-          : `${ev.type} via Trend Pullback: ADX ${ev.adx.toFixed(0)}, H4+D1 ${ev.htfBias}, H1 structure stacked, price retraced into the EMA20/50 zone, RSI rotating ${ev.rsi.toFixed(0)}, ${ev.session} session. Stop 1.5×ATR, target 1:2 R:R.`;
+          : `${ev.type} via Trend Pullback: ADX ${ev.adx.toFixed(0)}, H4+D1 ${ev.htfBias}, H1 stacked, pullback into EMA20/50, RSI ${ev.rsi.toFixed(0)}, ${ev.session}. Stop 1.5×ATR, target 1:2.`;
 
       return {
         ok: true,
@@ -629,10 +670,10 @@ export const getSignal = createServerFn({ method: "GET" }).handler(
           h1StructureOk: ev.h1StructureOk,
           session: ev.session,
           sessionOk: ev.sessionOk,
-          dxyTrend,
+          dxyTrend: ev.dxyTrend,
           dxyOk: ev.dxyOk,
           passed,
-          total: 4,
+          total: 5,
         },
         signal: {
           type: ev.type,
@@ -664,9 +705,9 @@ export const getSignal = createServerFn({ method: "GET" }).handler(
         dxy: dxySnapshot ? { price: dxySnapshot.price, changePct: dxySnapshot.changePct } : null,
         strategy: {
           name: "Single-Sleeve Trend Pullback",
-          version: "v4.0",
+          version: "v4.1",
           notes:
-            "Single-sleeve trend bot. ADX≥22, H4/D1 alignment, stacked H1 EMA structure, pullback into EMA20/50, and RSI momentum rotation. DXY is a confidence input rather than a hard gate. Backtest uses a fixed-rule 70/30 sample split with time-aligned DXY context.",
+            "Indicators precomputed once per request — backtest now runs O(n) over the last ~2000 H1 bars instead of O(n²). Same rules: ADX≥22, H4/D1 alignment, stacked H1 EMAs, pullback into EMA20/50, RSI rotation, kill-zone session, DXY confidence input. 70/30 walk-forward split.",
         },
         fetchedAt: new Date().toISOString(),
       };
